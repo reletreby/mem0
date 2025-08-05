@@ -1384,18 +1384,19 @@ class AsyncMemory(MemoryBase):
             "mem0.get_all", self, {"limit": limit, "keys": keys, "encoded_ids": encoded_ids, "sync_type": "async"}
         )
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._get_all_from_vector_store, effective_filters, limit)
-            future_graph_entities = (
-                executor.submit(self.graph.get_all, effective_filters, limit) if self.enable_graph else None
-            )
-
-            concurrent.futures.wait(
-                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
-            )
-
-            all_memories_result = future_memories.result()
-            graph_entities_result = future_graph_entities.result() if future_graph_entities else None
+        memory_task = asyncio.create_task(self._get_all_from_vector_store(effective_filters, limit))
+        graph_task = None
+        if self.enable_graph:
+            if hasattr(self.graph.get_all, "__await__"):  # Check if graph get_all is async
+                graph_task = asyncio.create_task(self.graph.get_all(effective_filters, limit))
+            else:
+                graph_task = asyncio.create_task(asyncio.to_thread(self.graph.get_all, effective_filters, limit))
+        
+        if graph_task:
+            all_memories_result, graph_entities_result = await asyncio.gather(memory_task, graph_task)
+        else:
+            all_memories_result = await memory_task
+            graph_entities_result = None
 
         if self.enable_graph:
             return {"results": all_memories_result, "relations": graph_entities_result}
